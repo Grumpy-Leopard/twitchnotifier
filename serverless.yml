@@ -1,0 +1,124 @@
+service: twitchnotifier
+
+custom:
+  stage: ${opt:stage, self:provider.stage}
+  region: ${opt:region, self:provider.region}
+
+provider:
+  name: aws
+  runtime: nodejs6.10
+  memorySize: 128
+  timeout: 20
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - SNS:Publish
+      Resource: { "Fn::Join" : ["", ["arn:aws:sns:${self:custom.region}:", { "Ref" : "AWS::AccountId" }, ":${self:service}-subscribe-${self:custom.stage}" ] ]  }
+    - Effect: Allow
+      Action:
+        - SNS:Publish
+      Resource: { "Fn::Join" : ["", ["arn:aws:sns:${self:custom.region}:", { "Ref" : "AWS::AccountId" }, ":${self:service}-notify-${self:custom.stage}" ] ]  }
+    - Effect: Allow
+      Action:
+        - SNS:Publish
+      Resource: { "Fn::Join" : ["", ["arn:aws:sns:${self:custom.region}:", { "Ref" : "AWS::AccountId" }, ":${self:service}-publish-discord-${self:custom.stage}" ] ]  }
+    - Effect: Allow
+      Action:
+        - SNS:Publish
+      Resource: { "Fn::Join" : ["", ["arn:aws:sns:${self:custom.region}:", { "Ref" : "AWS::AccountId" }, ":${self:service}-notify-debug-${self:custom.stage}" ] ]  }
+    - Effect: Allow
+      Action:
+        - DynamoDB:Query
+        - DynamoDB:Scan
+        - DynamoDB:GetItem
+        - DynamoDB:PutItem
+        - DynamoDB:UpdateItem
+        - DynamoDB:DeleteItem
+      Resource: { "Fn::Join" : ["", ["arn:aws:dynamodb:${self:custom.region}:", { "Ref" : "AWS::AccountId" }, ":table/", { "Ref" : "ddbTwitchStreamers" } ] ] }
+    - Effect: Allow
+      Action:
+        - DynamoDB:Query
+        - DynamoDB:Scan
+        - DynamoDB:GetItem
+        - DynamoDB:PutItem
+        - DynamoDB:UpdateItem
+        - DynamoDB:DeleteItem
+      Resource: { "Fn::Join" : ["", ["arn:aws:dynamodb:${self:custom.region}:", { "Ref" : "AWS::AccountId" }, ":table/", { "Ref" : "ddbDiscordWebhooks" } ] ] }
+  #  stage: dev
+  region: ap-southeast-2
+  environment:
+    TWITCH_CLIENT_ID: "${env:TWITCH_CLIENT_ID}"
+    TWITCH_CLIENT_HUB_SECRET: "${env:TWITCH_CLIENT_HUB_SECRET}"
+    PUBLISH_DISCORD_SNSARN: { "Fn::Join" : ["", ["arn:aws:sns:${self:custom.region}:", { "Ref" : "AWS::AccountId" }, ":${self:service}-publish-discord-${self:custom.stage}" ] ]  }
+    TWITCH_ALERT_SNSARN: { "Fn::Join" : ["", ["arn:aws:sns:${self:custom.region}:", { "Ref" : "AWS::AccountId" }, ":${self:service}-notify-${self:custom.stage}" ] ]  }
+    TWITCH_ALERT_SNSARN_DEBUG: { "Fn::Join" : ["", ["arn:aws:sns:${self:custom.region}:", { "Ref" : "AWS::AccountId" }, ":${self:service}-notify-debug-${self:custom.stage}" ] ]  }
+    FOLLOW_NOTIFICATION_HANDLER: "/follow/alert"
+    STREAM_NOTIFICATION_HANDLER: "/stream/alert"
+    REGISTRATION_HANDLER: "/registrator"
+    DDB_TWITCH_STREAMERS: { "Ref" : "ddbTwitchStreamers" } #${self:service}-twitch-streamers-${self:custom.stage}
+    DDB_DISCORD_WEBHOOKS: { "Ref" : "ddbDiscordWebhooks" } #${self:service}-discord-webhooks-${self:custom.stage}
+    STREAM_SUBSCRIBE_RENEWAL_PERIOD: 172800 # 48 Hours
+    STREAM_SUBSCRIBE_SNSARN: { "Fn::Join" : ["", ["arn:aws:sns:${self:custom.region}:", { "Ref" : "AWS::AccountId" }, ":${self:service}-subscribe-${self:custom.stage}" ] ]  }
+    API_BASE_URI: { "Fn::Join" : ["", [ "https://", { "Ref" : "ApiGatewayRestApi" }, ".execute-api.${self:custom.region}.amazonaws.com/${self:custom.stage}" ] ]  }
+
+
+functions:
+  notificationbroker:
+    handler: NotificationBroker.handler
+    events:
+      - sns: ${self:service}-notify-${self:custom.stage}
+      - sns: ${self:service}-notify-debug-${self:custom.stage} #Temp until a debug function is made
+
+  streamautoresubscribe:
+    handler: StreamAutoResubscribe.handler
+    events:
+      - schedule: rate(4 hours)
+
+  streamsubscribe:
+    handler: StreamSubscribe.handler
+    events:
+      - sns: ${self:service}-subscribe-${self:custom.stage}
+
+  streamalert:
+    handler: StreamAlert.handler
+    events:
+      - http: POST /stream/alert
+      - http: GET /stream/alert
+
+  publishdiscord:
+    handler: PublishDiscord.handler
+    events:
+      - sns: ${self:service}-publish-discord-${self:custom.stage}
+
+  registrator:
+    handler: registrator.handler
+    events:
+      - http: GET /
+
+
+resources:
+  Resources:
+    ddbTwitchStreamers:
+      Type: "AWS::DynamoDB::Table"
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: "userID"
+            AttributeType: "S"
+        KeySchema:
+          - AttributeName: "userID"
+            KeyType: "HASH"
+        ProvisionedThroughput:
+          ReadCapacityUnits: "5"
+          WriteCapacityUnits: "5"
+    ddbDiscordWebhooks:
+      Type: "AWS::DynamoDB::Table"
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: "keyID"
+            AttributeType: "S"
+        KeySchema:
+          - AttributeName: "keyID"
+            KeyType: "HASH"
+        ProvisionedThroughput:
+          ReadCapacityUnits: "5"
+          WriteCapacityUnits: "5"
